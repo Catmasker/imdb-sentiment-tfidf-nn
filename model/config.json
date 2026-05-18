@@ -1,0 +1,10 @@
+{
+  "input_dim": 100,
+  "embedding_dim": 50,
+  "pooling": "mean+max (concatenated)",
+  "model_architecture": "SentimentMLP(100\u2192256\u2192128\u219264\u21921) + BatchNorm",
+  "dataset": "imdb_balanced_10k.csv",
+  "embedding_source": "tiny_glove.json",
+  "test_accuracy": 0.7305,
+  "threshold": 0.5
+}

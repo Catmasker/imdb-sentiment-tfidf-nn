@@ -1,14 +1,11 @@
 """
 IMDB 情感分析 —— TF-IDF + 神经网络分类器
 ============================================
-思路演进：
-  1. GloVe 平均池化 → 73% (信息丢失太多)
-  2. 纯 TF-IDF + 大 MLP → 86% (过拟合严重)
-  3. TF-IDF + 小 MLP → 86% (依然过拟合)
-  4. TF-IDF + 线性模型 → 89% (不过拟合但无非线性)
-  5. TF-IDF(25000特征) + 强正则化 → ≥90% ✓ (最终方案)
-
-经验教训：IMDB 评论词汇丰富，需要大量特征 + 强正则化
+最终方案：
+  - TF-IDF (25000 特征, 词+双词, sublinear_tf)
+  - 轻量神经网络 (25000→16→1) + Dropout
+  - AdamW + 强 L2 正则化 (weight_decay=0.03)
+  - 逐批稀疏→稠密转换（低内存占用，兼容 GitHub Actions）
 """
 
 import json
@@ -34,8 +31,7 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 print("=" * 60)
 print("加载数据...")
 df = pd.read_csv(os.path.join(DATA_DIR, "imdb_balanced_10k.csv"))
-print(f"数据集大小: {len(df)} 条")
-print(f"好评数: {(df['label'] == 1).sum()}, 差评数: {(df['label'] == 0).sum()}")
+print(f"数据集: {len(df)} 条, 好评: {(df['label']==1).sum()}, 差评: {(df['label']==0).sum()}")
 
 # ──────────────────────────────────────────────
 # 2. 文本预处理
@@ -43,63 +39,39 @@ print(f"好评数: {(df['label'] == 1).sum()}, 差评数: {(df['label'] == 0).su
 def clean_text(text):
     text = re.sub(r"<br\s*/?>", " ", text)
     text = re.sub(r"[^a-zA-Z\s]", "", text)
-    text = text.lower().strip()
-    return text
+    return text.lower().strip()
 
-print("\n清洗文本...")
 df["clean_text"] = df["text"].apply(clean_text)
-
-print("\n预处理示例：")
-print(f"  原文:  {df['text'].iloc[0][:150]}...")
-print(f"  清洗后: {df['clean_text'].iloc[0][:150]}...")
+print(f"\n预处理示例:\n  原文: {df['text'].iloc[0][:100]}...\n  清洗: {df['clean_text'].iloc[0][:100]}...")
 
 # ──────────────────────────────────────────────
-# 3. TF-IDF 特征提取（大量特征 + 强信号）
+# 3. TF-IDF 特征提取
 # ──────────────────────────────────────────────
 print("\n提取 TF-IDF 特征...")
 vectorizer = TfidfVectorizer(
-    max_features=25000,
-    ngram_range=(1, 2),
-    sublinear_tf=True,
+    max_features=25000, ngram_range=(1, 2), sublinear_tf=True,
 )
 X = vectorizer.fit_transform(df["clean_text"])
 y = df["label"].values.astype(np.float32)
 
 INPUT_DIM = X.shape[1]
-print(f"特征矩阵形状: {X.shape} (稀疏)")
-print(f"词汇表大小: {INPUT_DIM}")
-print(f"密度: {X.nnz / (X.shape[0] * X.shape[1]) * 100:.2f}%")
+print(f"特征矩阵: {X.shape}, 密度: {X.nnz/(X.shape[0]*X.shape[1])*100:.2f}%")
 
 # ──────────────────────────────────────────────
-# 4. 划分训练/测试 → 转为稠密张量
+# 4. 划分训练/测试（保持稀疏！）
 # ──────────────────────────────────────────────
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
 )
-print(f"\n训练集: {X_train.shape[0]} 条, 测试集: {X_test.shape[0]} 条")
+print(f"训练集: {X_train.shape[0]} 条, 测试集: {X_test.shape[0]} 条")
 
-# 转密集（25000 维对于现代机器是可行的）
-print("\n转密集张量...")
-X_train_dense = X_train.toarray()
-X_test_dense = X_test.toarray()
-
-X_train_t = torch.tensor(X_train_dense, dtype=torch.float32)
 y_train_t = torch.tensor(y_train, dtype=torch.float32).view(-1, 1)
-X_test_t = torch.tensor(X_test_dense, dtype=torch.float32)
 y_test_t = torch.tensor(y_test, dtype=torch.float32).view(-1, 1)
 
-print(f"训练张量: {X_train_t.shape}, 测试张量: {X_test_t.shape}")
-
 # ──────────────────────────────────────────────
-# 5. 模型：深度线性 → 单隐层神经网络
+# 5. 模型
 # ──────────────────────────────────────────────
 class SentimentNet(nn.Module):
-    """
-    "深度线性" 模型 —— 即轻微非线性的 logistic 回归
-
-    25000 维 TF-IDF 特征已经信息量足够大，非线性反而容易过拟合。
-    用一个极小的隐层（16单元）在不过拟合的前提下提供一点非线性能力。
-    """
     def __init__(self, input_dim=25000, hidden=16):
         super().__init__()
         self.net = nn.Sequential(
@@ -117,30 +89,22 @@ class SentimentNet(nn.Module):
 model = SentimentNet(input_dim=INPUT_DIM)
 total_params = sum(p.numel() for p in model.parameters())
 print(f"\n参数量: {total_params:,}")
-print(f"模型结构:\n{model}")
 
 # ──────────────────────────────────────────────
-# 6. 训练配置（强正则化）
+# 6. 训练配置
 # ──────────────────────────────────────────────
 criterion = nn.BCELoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.03)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, mode="max", factor=0.5, patience=3
-)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=3)
 epochs = 100
 batch_size = 64
 
-print(f"\n训练配置:")
-print(f"  损失函数: BCELoss")
-print(f"  优化器: AdamW (lr=0.001, weight_decay=0.01)")
-print(f"  批次大小: {batch_size}")
-print(f"  最大轮数: {epochs}")
-print(f"  早停: 连续 10 轮未提升则停止")
+print(f"训练: BCELoss | AdamW(lr=0.001, wd=0.03) | batch={batch_size} | max_epochs={epochs}")
 
 # ──────────────────────────────────────────────
-# 7. 训练循环
+# 7. 训练循环（逐批稀疏→稠密）
 # ──────────────────────────────────────────────
-n = len(X_train_t)
+n = X_train.shape[0]
 best_acc = 0.0
 best_model_state = None
 patience_counter = 0
@@ -153,8 +117,11 @@ for epoch in range(epochs):
     epoch_loss = 0.0
 
     for i in range(0, n, batch_size):
-        X_batch = X_train_t[i:i+batch_size]
+        # 逐批转换：只把当前 batch 转稠密 → 内存友好
+        X_batch_sparse = X_train[i:i+batch_size]
+        X_batch = torch.tensor(X_batch_sparse.toarray(), dtype=torch.float32)
         y_batch = y_train_t[i:i+batch_size]
+
         outputs = model(X_batch)
         loss = criterion(outputs, y_batch)
         optimizer.zero_grad()
@@ -162,11 +129,18 @@ for epoch in range(epochs):
         optimizer.step()
         epoch_loss += loss.item()
 
+    # 测试集评估（也逐批，避免大矩阵）
     model.eval()
-    with torch.no_grad():
-        test_preds = model(X_test_t)
-        test_preds_bin = (test_preds.numpy() > 0.5).astype(int)
-        test_acc = accuracy_score(y_test, test_preds_bin)
+    all_preds = []
+    m = X_test.shape[0]
+    for i in range(0, m, batch_size):
+        X_batch_sparse = X_test[i:i+batch_size]
+        X_batch = torch.tensor(X_batch_sparse.toarray(), dtype=torch.float32)
+        with torch.no_grad():
+            preds = model(X_batch).numpy()
+        all_preds.append(preds)
+    y_pred_bin = (np.concatenate(all_preds) > 0.5).astype(int)
+    test_acc = accuracy_score(y_test, y_pred_bin)
 
     scheduler.step(test_acc)
     avg_loss = epoch_loss / ((n - 1) // batch_size + 1)
@@ -181,23 +155,27 @@ for epoch in range(epochs):
     if (epoch + 1) % 5 == 0 or epoch == 0:
         lr = optimizer.param_groups[0]["lr"]
         print(f"  Epoch [{epoch+1:3d}/{epochs}]  "
-              f"Loss: {avg_loss:.4f}  "
-              f"Acc: {test_acc:.4f}  "
-              f"Best: {best_acc:.4f}  "
-              f"LR: {lr:.6f}")
+              f"Loss: {avg_loss:.4f}  Acc: {test_acc:.4f}  "
+              f"Best: {best_acc:.4f}  LR: {lr:.6f}")
 
     if patience_counter >= 10:
         print(f"\n  早停: 连续 10 轮未提升")
         break
 
 # ──────────────────────────────────────────────
-# 8. 最终评估（最佳模型）
+# 8. 最终评估
 # ──────────────────────────────────────────────
 model.load_state_dict(best_model_state)
 model.eval()
-with torch.no_grad():
-    y_pred_proba = model(X_test_t).numpy().flatten()
-    y_pred = (y_pred_proba > 0.5).astype(int)
+all_preds = []
+m = X_test.shape[0]
+for i in range(0, m, batch_size):
+    X_batch_sparse = X_test[i:i+batch_size]
+    X_batch = torch.tensor(X_batch_sparse.toarray(), dtype=torch.float32)
+    with torch.no_grad():
+        preds = model(X_batch).numpy()
+    all_preds.append(preds)
+y_pred = (np.concatenate(all_preds) > 0.5).astype(int)
 
 accuracy = accuracy_score(y_test, y_pred)
 precision = precision_score(y_test, y_pred)
@@ -205,51 +183,43 @@ recall = recall_score(y_test, y_pred)
 f1 = f1_score(y_test, y_pred)
 
 print("\n" + "=" * 60)
-print("最终测试集评估结果 (最佳模型):")
-print(f"  Accuracy (准确率):  {accuracy:.4f}")
-print(f"  Precision (精确率): {precision:.4f}")
-print(f"  Recall (召回率):    {recall:.4f}")
-print(f"  F1 Score:           {f1:.4f}")
+print("最终测试集评估结果:")
+print(f"  Accuracy: {accuracy:.4f}")
+print(f"  Precision: {precision:.4f}")
+print(f"  Recall: {recall:.4f}")
+print(f"  F1 Score: {f1:.4f}")
 
 if accuracy >= 0.90:
-    print(f"\n目标达成！准确率 {accuracy:.2%} >= 90% ✓")
+    print(f"\n目标达成！{accuracy:.2%} >= 90% ✓")
 else:
     print(f"\n当前 {accuracy:.2%} < 90%")
 
 # ──────────────────────────────────────────────
 # 9. 保存
 # ──────────────────────────────────────────────
-print("\n保存模型到 model/ 目录...")
-
+print("\n保存模型...")
 torch.save(model.state_dict(), os.path.join(MODEL_DIR, "model.pt"))
-print(f"  ✓ 模型权重       → model/model.pt")
-
 with open(os.path.join(MODEL_DIR, "tfidf_vectorizer.pkl"), "wb") as f:
     pickle.dump(vectorizer, f)
-print(f"  ✓ TF-IDF 向量器  → model/tfidf_vectorizer.pkl")
 
 config = {
     "input_dim": INPUT_DIM,
-    "feature_method": "TF-IDF (unigrams+bigrams, max_features=25000, sublinear_tf)",
-    "model_architecture": "SentimentNet(25000→16→1) + Dropout + AdamW weight_decay=0.01",
+    "feature_method": "TF-IDF (unigram+bigram, max_features=25000)",
+    "model_architecture": "SentimentNet(25000->16->1) + Dropout + AdamW wd=0.03",
     "dataset": "imdb_balanced_10k.csv",
     "test_accuracy": float(accuracy),
     "threshold": 0.5,
 }
 with open(os.path.join(MODEL_DIR, "config.json"), "w") as f:
     json.dump(config, f, indent=2)
-print(f"  ✓ 配置           → model/config.json")
 
 metrics = {
-    "accuracy": float(accuracy),
-    "precision": float(precision),
-    "recall": float(recall),
-    "f1_score": float(f1),
-    "test_size": int(X_test.shape[0]),
-    "train_size": int(X_train.shape[0]),
+    "accuracy": float(accuracy), "precision": float(precision),
+    "recall": float(recall), "f1_score": float(f1),
+    "test_size": int(X_test.shape[0]), "train_size": int(X_train.shape[0]),
 }
-with open(os.path.join(MODEL_DIR, "metrics.json"), "w", encoding="utf-8") as f:
+with open(os.path.join(MODEL_DIR, "metrics.json"), "w") as f:
     json.dump(metrics, f, indent=2)
-print(f"  ✓ 指标           → model/metrics.json")
 
-print(f"\n✅ 训练完成！测试集准确率: {accuracy:.2%}")
+print(f"  model.pt + tfidf_vectorizer.pkl + config.json + metrics.json")
+print(f"\n✅ 训练完成！准确率: {accuracy:.2%}")

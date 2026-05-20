@@ -16,50 +16,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          echo "=== Dependencies installed ==="
+        run: pip install -r requirements.txt
 
       - name: Train model
-        run: |
-          python train.py 2>&1
-          echo "=== Training complete ==="
-
-      - name: Debug - list model files
-        run: ls -lh model/
+        run: python train.py
 
       - name: Upload to Hugging Face Hub
         continue-on-error: true
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          python -c "
-      import os, json
-      from huggingface_hub import HfApi
-
-      token = os.environ.get('HF_TOKEN', '')
-      if not token:
-          print('HF_TOKEN not set, skipping upload')
-          exit(0)
-
-      api = HfApi()
-      who = api.whoami(token=token)
-      HF_USERNAME = who['name']
-      REPO_NAME = 'imdb-sentiment-tfidf-nn'
-      repo_id = f'{HF_USERNAME}/{REPO_NAME}'
-
-      api.create_repo(repo_id, token=token, exist_ok=True, private=False)
-      print(f'HF repo: https://huggingface.co/{repo_id}')
-
-      for fpath in ['model/model.pt', 'model/config.json',
-                    'model/metrics.json', 'model/tfidf_vectorizer.pkl']:
-          if os.path.exists(fpath):
-              api.upload_file(path_or_fileobj=fpath, path_in_repo=fpath,
-                             repo_id=repo_id, token=token)
-              print(f'  Uploaded {fpath}')
-
-      print('Upload to Hugging Face complete')
-      "
+        run: python upload_to_hf.py

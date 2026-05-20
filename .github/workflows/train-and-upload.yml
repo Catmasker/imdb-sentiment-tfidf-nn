@@ -3,7 +3,7 @@ name: Train and Upload to Hugging Face
 on:
   push:
     branches: [main, master]
-  workflow_dispatch:        # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   train-and-upload:
@@ -30,47 +30,35 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python -c "
-import os, json
-from huggingface_hub import HfApi
+      import os, json
+      from huggingface_hub import HfApi
 
-token = os.environ['HF_TOKEN']
-HF_USERNAME = os.environ.get('HF_USERNAME', '')  # 你的 HF 用户名
-REPO_NAME = 'imdb-sentiment-glove-nn'
+      token = os.environ['HF_TOKEN']
+      api = HfApi()
+      who = api.whoami(token=token)
+      HF_USERNAME = who['name']
+      REPO_NAME = 'imdb-sentiment-tfidf-nn'
 
-# 如果是第一次运行，把下面这行的 HF_USERNAME 改为你的实际用户名
-if not HF_USERNAME:
-    # 尝试从 token 获取用户名
-    api_test = HfApi()
-    try:
-        who = api_test.whoami(token=token)
-        HF_USERNAME = who['name']
-    except:
-        HF_USERNAME = 'YOUR_HF_USERNAME'
+      repo_id = f'{HF_USERNAME}/{REPO_NAME}'
+      api.create_repo(repo_id, token=token, exist_ok=True, private=False)
+      print(f'HF Repo: https://huggingface.co/{repo_id}')
 
-repo_id = f'{HF_USERNAME}/{REPO_NAME}'
-api = HfApi()
+      artifacts = [
+          'model/model.pt',
+          'model/config.json',
+          'model/metrics.json',
+          'model/tfidf_vectorizer.pkl',
+      ]
 
-# 创建或获取 Hugging Face 仓库
-api.create_repo(repo_id, token=token, exist_ok=True, private=False)
-print(f'HF Repo: https://huggingface.co/{repo_id}')
+      for fpath in artifacts:
+          if os.path.exists(fpath):
+              api.upload_file(
+                  path_or_fileobj=fpath,
+                  path_in_repo=fpath,
+                  repo_id=repo_id,
+                  token=token,
+              )
+              print(f'Uploaded {fpath}')
 
-# 上传所有训练产物
-artifacts = [
-    'model/model.pt',
-    'model/config.json',
-    'model/metrics.json',
-    'model/glove_embedding.pkl',
-]
-
-for fpath in artifacts:
-    if os.path.exists(fpath):
-        api.upload_file(
-            path_or_fileobj=fpath,
-            path_in_repo=fpath,
-            repo_id=repo_id,
-            token=token,
-        )
-        print(f'Uploaded {fpath}')
-
-print(f'✅ All files uploaded to https://huggingface.co/{repo_id}')
-"
+      print(f'All files uploaded to https://huggingface.co/{repo_id}')
+      "

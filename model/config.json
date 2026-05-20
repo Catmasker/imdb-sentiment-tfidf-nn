@@ -1,10 +1,8 @@
 {
-  "input_dim": 100,
-  "embedding_dim": 50,
-  "pooling": "mean+max (concatenated)",
-  "model_architecture": "SentimentMLP(100\u2192256\u2192128\u219264\u21921) + BatchNorm",
+  "input_dim": 25000,
+  "feature_method": "TF-IDF (unigrams+bigrams, max_features=25000, sublinear_tf)",
+  "model_architecture": "SentimentNet(25000\u219216\u21921) + Dropout + AdamW weight_decay=0.01",
   "dataset": "imdb_balanced_10k.csv",
-  "embedding_source": "tiny_glove.json",
-  "test_accuracy": 0.7305,
+  "test_accuracy": 0.9025,
   "threshold": 0.5
 }

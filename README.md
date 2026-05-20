@@ -1,6 +1,6 @@
 # IMDB Sentiment Analysis with TF-IDF + Neural Network
 
-[![Train and Upload to Hugging Face](https://github.com/Catmasker/imdb-sentiment-nn/actions/workflows/train-and-upload.yml/badge.svg)](https://github.com/Catmasker/imdb-sentiment-nn/actions/workflows/train-and-upload.yml)
+[![Train and Upload to Hugging Face](https://github.com/Catmasker/imdb-sentiment-tfidf-nn/actions/workflows/train-and-upload.yml/badge.svg)](https://github.com/Catmasker/imdb-sentiment-tfidf-nn/actions/workflows/train-and-upload.yml)
 
 A complete ML project with automated CI/CD pipeline that trains a sentiment analysis model and deploys it to Hugging Face Hub.
 
